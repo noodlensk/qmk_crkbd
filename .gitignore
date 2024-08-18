@@ -1,3 +1,4 @@
+/.idea
 # Junk files
 *.bak
 *.swp
@@ -9,3 +10,6 @@
 *.hex
 *.bin
 *.uf2
+
+
+/compile_commands.json

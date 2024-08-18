@@ -1,0 +1,24 @@
+version: 3
+tasks:
+  build:
+    desc: "Build the project"
+    cmd: "qmk compile"
+  flash:
+    desc: "Flash the firmware"
+    cmd: "qmk flash -m ATmega32U4 -bl dfu"
+  update:
+    desc: "Update the QMK firmware"
+    deps: ["update-qmk-repo", "generate-compilation-database"]
+  update-qmk-repo:
+    desc: "Update QMK repo firmware to latest master"
+    dir: "../qmk_firmware"
+    internal: true
+    cmds:
+      - "git pull"
+      - "make git-submodule"
+  generate-compilation-database:
+    internal: true
+    desc: "Generate compile_commands.json"
+    cmd: "qmk generate-compilation-database"
+  default:
+    cmd: task --list

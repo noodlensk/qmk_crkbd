@@ -30,3 +30,7 @@ indent_style = tab
 
 [*.sh]
 end_of_line = lf
+
+[*.{yaml,yml}]
+indent_style = space
+indent_size = 2
