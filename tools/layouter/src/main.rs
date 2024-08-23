@@ -1,11 +1,9 @@
 #![warn(clippy::all, clippy::pedantic)]
 mod keyboard;
+mod ui;
 
-use std::collections::HashMap;
 use futures::{FutureExt, StreamExt};
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders};
+use hidapi::HidError;
 use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
@@ -13,24 +11,31 @@ use ratatui::{
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
         ExecutableCommand,
     },
-    style::Stylize,
-    widgets::Paragraph,
-    Frame, Terminal,
+    Terminal,
 };
-use std::io::{stdout, Result};
+use std::collections::HashMap;
+use std::io::stdout;
 use tokio::{
     sync::mpsc,
     task,
     time::{self, Duration},
 };
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), std::io::Error> {
     let (tx, mut rx) = mpsc::channel(32);
-    let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+
+    let token = CancellationToken::new();
+
+    let keyboard_shutdown = token.clone();
 
     let keyboard_task = task::spawn(async move {
-        let mut keyboard = keyboard::Keyboard::new().expect("Could not open the keyboard");
+        let mut keyboard = keyboard::Keyboard::new().map_err(|err| {
+            keyboard_shutdown.cancel();
+            err
+        })?;
+
         let mut current_layer = keyboard::Layer::Base;
         let mut interval = time::interval(Duration::from_millis(16));
 
@@ -43,61 +48,78 @@ async fn main() -> Result<()> {
                                 continue;
                             }
 
-                            if tx.send(layer).await.is_err() {
-                                println!("Could not send layer change to the main task");
-                                break;
-                            }
+                            tx.send(layer).await.map_err(|err| {
+                                keyboard_shutdown.cancel();
+                                HidError::IoError { error: std::io::Error::new(std::io::ErrorKind::BrokenPipe, err) }
+                            })?;
 
                             current_layer = layer;
                         }
-                        Err(err) => {
-                            println!("Error reading layer change: {err:?}");
-                            break;
-                        }
+                        Err(err) => return Err(err),
                     }
                 }
-                _ = shutdown_rx.recv() => break,
+                _ = keyboard_shutdown.cancelled() => break,
             }
         }
+
+        Ok(())
     });
 
-    let mut layers: HashMap<keyboard::Layer,[&str; 42]> = HashMap::new();
+    let mut layers: HashMap<keyboard::Layer, [&str; 42]> = HashMap::new();
 
-    layers.insert(keyboard::Layer::Base, [
-        "tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "<-", "ctrl", "A", "S", "D",
-        "F", "G", "H", "J", "K", "L", ";", "\"", "shift", "Z", "X", "C", "V", "B", "N", "M",
-        ",", ".", "/", "esc", "cmd", "MO(1)", "--", "\u{23CE}", "MO(2)", "alt",
-    ]);
+    layers.insert(
+        keyboard::Layer::Base,
+        [
+            "tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "<-", "ctrl", "A", "S", "D",
+            "F", "G", "H", "J", "K", "L", ";", "\"", "shift", "Z", "X", "C", "V", "B", "N", "M",
+            ",", ".", "/", "esc", "cmd", "MO(1)", "--", "\u{23CE}", "MO(2)", "alt",
+        ],
+    );
 
-    layers.insert(keyboard::Layer::BaseShift, [
-        "tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "<-", "ctrl", "A", "S", "D",
-        "F", "G", "H", "J", "K", "L", ";", "\"", "shift", "Z", "X", "C", "V", "B", "N", "M",
-        ",", ".", "/", "esc", "cmd", "MO(1)", "--", "\u{23CE}", "MO(2)", "alt",
-    ]);
+    layers.insert(
+        keyboard::Layer::BaseShift,
+        [
+            "tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "<-", "ctrl", "A", "S", "D",
+            "F", "G", "H", "J", "K", "L", ";", "\"", "shift", "Z", "X", "C", "V", "B", "N", "M",
+            ",", ".", "/", "esc", "cmd", "MO(1)", "--", "\u{23CE}", "MO(2)", "alt",
+        ],
+    );
 
-    layers.insert(keyboard::Layer::Lower, [
-        "tab", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "<-", "ctrl", "", "", "", "",
-        "", "LEFT", "DOWN", "UP", "RIGHT", "", "", "shift", "", "", "", "", "", "", "", "", "",
-        "", "", "cmd", "__", "--", "\u{23CE}", "MO(3)", "alt",
-    ]);
+    layers.insert(
+        keyboard::Layer::Lower,
+        [
+            "tab", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "<-", "ctrl", "", "", "", "",
+            "", "LEFT", "DOWN", "UP", "RIGHT", "", "", "shift", "", "", "", "", "", "", "", "", "",
+            "", "", "cmd", "__", "--", "\u{23CE}", "MO(3)", "alt",
+        ],
+    );
 
-    layers.insert(keyboard::Layer::LowerShift, [
-        "tab", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "<-", "ctrl", "", "", "", "",
-        "", "LEFT", "DOWN", "UP", "RIGHT", "", "", "shift", "", "", "", "", "", "", "", "", "",
-        "", "", "cmd", "__", "--", "\u{23CE}", "MO(3)", "alt",
-    ]);
+    layers.insert(
+        keyboard::Layer::LowerShift,
+        [
+            "tab", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "<-", "ctrl", "", "", "", "",
+            "", "LEFT", "DOWN", "UP", "RIGHT", "", "", "shift", "", "", "", "", "", "", "", "", "",
+            "", "", "cmd", "__", "--", "\u{23CE}", "MO(3)", "alt",
+        ],
+    );
 
-    layers.insert(keyboard::Layer::Raise, [
-        "tab", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "<-", "ctrl", "", "", "", "",
-        "", "-", "=", "[", "]", "\\", "`", "shift", "", "", "", "", "", "_", "+", "{", "}",
-        "|", "~", "cmd", "MO(3)", "--", "\u{23CE}", "__", "alt",
-    ]);
+    layers.insert(
+        keyboard::Layer::Raise,
+        [
+            "tab", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "<-", "ctrl", "", "", "", "",
+            "", "-", "=", "[", "]", "\\", "`", "shift", "", "", "", "", "", "_", "+", "{", "}",
+            "|", "~", "cmd", "MO(3)", "--", "\u{23CE}", "__", "alt",
+        ],
+    );
 
-    layers.insert(keyboard::Layer::RaiseShift, [
-        "tab", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "<-", "ctrl", "", "", "", "",
-        "", "-", "=", "[", "]", "\\", "`", "shift", "", "", "", "", "", "_", "+", "{", "}",
-        "|", "~", "cmd", "MO(3)", "--", "\u{23CE}", "__", "alt",
-    ]);
+    layers.insert(
+        keyboard::Layer::RaiseShift,
+        [
+            "tab", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "<-", "ctrl", "", "", "", "",
+            "", "-", "=", "[", "]", "\\", "`", "shift", "", "", "", "", "", "_", "+", "{", "}",
+            "|", "~", "cmd", "MO(3)", "--", "\u{23CE}", "__", "alt",
+        ],
+    );
 
     stdout().execute(EnterAlternateScreen)?;
     enable_raw_mode()?;
@@ -116,7 +138,7 @@ async fn main() -> Result<()> {
                     let keys = layers.get(&current_layer).expect("Could not find the current layer");
 
                     for (i, key) in keys.iter().enumerate() {
-                      draw_key(frame, key, u16::try_from(i).expect("Could not convert usize to u16"));
+                      ui::draw_key(frame, key, u16::try_from(i).expect("Could not convert usize to u16"));
                     }
                 })?;
             }
@@ -125,79 +147,24 @@ async fn main() -> Result<()> {
             Some(event) = events.next().fuse() => {
                 if let Ok(Event::Key(key)) = event {
                     if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
-                        shutdown_tx.send(()).await.expect("Could not send shutdown signal");
+                        token.cancel();
                         break;
                     }
                 }
             }
+
+           () = token.cancelled() => break,
         }
     }
-
-    keyboard_task.await?;
 
     stdout().execute(LeaveAlternateScreen)?;
     disable_raw_mode()?;
-    Ok(())
-}
 
-// Draw a key on the frame at the given position, with offsets
-fn draw_key(frame: &mut Frame, key: &str, key_index: u16) {
-    const INITIAL_OFFSET_Y: u16 = 3;
-
-    const KEY_WIDTH: u16 = 8;
-    const KEY_HEIGHT: u16 = 4;
-    const KEY_SPACING: u16 = 1;
-    const KEY_ROWS: u16 = 12;
-
-    let column = key_index % KEY_ROWS;
-    let row = key_index / KEY_ROWS;
-
-    #[allow(clippy::match_same_arms)]
-    let mut column_offset = match column {
-        2 => 2,
-        3 => 3,
-        4 => 2,
-        5 => 1,
-        6 => 1,
-        7 => 2,
-        8 => 3,
-        9 => 2,
-        _ => 0,
-    };
-
-    let mut row_offset = match column {
-        6..12 => 10,
-        _ => 0,
-    };
-
-    if row == 3 {
-        row_offset += 27;
-        column_offset = 0;
-
-        if column > 2 {
-            row_offset += 10;
-        }
+    match keyboard_task.await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => eprintln!("Error: {err}"),
+        Err(err) => eprintln!("Error: {err}"),
     }
 
-    let x = column * (KEY_WIDTH + KEY_SPACING) + row_offset;
-    let y = row * (KEY_HEIGHT + KEY_SPACING) + INITIAL_OFFSET_Y - column_offset;
-
-    let rect = Rect {
-        x,
-        y,
-        width: KEY_WIDTH,
-        height: KEY_HEIGHT,
-    };
-
-    let key_widget = Paragraph::new(key)
-        .style(Style::default().fg(Color::White).bg(Color::Black).bold())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::White).bg(Color::Black)),
-        )
-        .alignment(ratatui::layout::Alignment::Center)
-        .centered();
-
-    frame.render_widget(key_widget, rect);
+    Ok(())
 }

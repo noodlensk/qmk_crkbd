@@ -30,7 +30,9 @@ impl Keyboard {
                     && device.product_id() == PRODUCT_ID
                     && device.usage_page() == USAGE_PAGE
             })
-            .expect("Could not find the keyboard")
+            .ok_or(hidapi::HidError::IoError {
+                error: std::io::Error::new(std::io::ErrorKind::NotFound, "Could not find keyboard"),
+            })?
             .open_device(&api)?;
 
         device.set_blocking_mode(false)?;
@@ -44,7 +46,8 @@ impl Keyboard {
         let mut buf = [0u8; 4];
         self.device.read(&mut buf)?;
 
-        if buf[0] != 0x80 {  // is event type for layer change
+        if buf[0] != 0x80 {
+            // is event type for layer change
             return Ok(self.current_layer);
         }
 
@@ -58,7 +61,11 @@ impl Keyboard {
             (1, _) => Layer::Lower,
             (2, 1) => Layer::RaiseShift,
             (2, _) => Layer::Raise,
-            _ => return Err(hidapi::HidError::IoError { error: std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid layer") }),
+            _ => {
+                return Err(hidapi::HidError::IoError {
+                    error: std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid layer"),
+                })
+            }
         };
 
         self.current_layer = layer;
